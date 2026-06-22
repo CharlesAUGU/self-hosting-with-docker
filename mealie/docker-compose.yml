@@ -1,3 +1,12 @@
+configs:
+  tailscale-serve:
+    content: |
+      {"TCP":{"443":{"HTTPS":true}},
+      "Web":{"$${TS_CERT_DOMAIN}:443":
+          {"Handlers":{"/":
+          {"Proxy":"http://127.0.0.1:9000"}}}},
+      "AllowFunnel":{"$${TS_CERT_DOMAIN}:443":false}}
+
 services:
   mealie-tailscale:
     image: tailscale/tailscale:latest
@@ -5,25 +14,46 @@ services:
     hostname: mealie
     environment:
       - TS_AUTHKEY=<REPLACE_ME!>?ephemeral=false
-      - "TS_EXTRA_ARGS=--advertise-tags=tag:container --reset"
-      - TS_SERVE_CONFIG=/config/proxy.json
+      - "TS_EXTRA_ARGS=--advertise-tags=tag:<REPLACE_ME!> --reset"
+      - TS_SERVE_CONFIG=/config/serve.json
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_USERSPACE=false
+      - TS_ENABLE_HEALTH_CHECK=true
+      - TS_LOCAL_ADDR_PORT=127.0.0.1:41234
+      - TS_ACCEPT_DNS=false
+    configs:
+      - source: tailscale-serve
+        target: /config/serve.json
     volumes:
-      - ${PWD}/config:/config
       - ${PWD}/tailscale-state:/var/lib/tailscale
     devices:
       - /dev/net/tun:/dev/net/tun
     cap_add:
       - net_admin
     restart: always
+    healthcheck:
+      test: >
+        sh -c "
+          wget --spider -q http://127.0.0.1:41234/healthz &&
+          if [ ! -f /tmp/.dns-enabled ]; then
+            tailscale set --accept-dns=true &&
+            touch /tmp/.dns-enabled
+          fi
+        "
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    dns:
+      - 9.9.9.9
   mealie:
     image: ghcr.io/mealie-recipes/mealie:v2.8.0
     container_name: mealie
     restart: always
     network_mode: service:mealie-tailscale
     depends_on:
-      - mealie-tailscale
+      mealie-tailscale:
+        condition: service_healthy
     deploy:
       resources:
         limits:
